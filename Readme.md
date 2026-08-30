@@ -142,7 +142,7 @@ that fail to relay ICMP back to the host.
 
 ## License / attribution
 
-by ewald@jeitler.cc — <https://www.jeitler.guru>
+by ewald@jeitler.cc — <https://www.jeitler.cc>
 
 > *When I wrote this code, only God and I knew how it worked.*
 > *Now only God and the AI know it. And since the AI helped write it… good luck to all of us.*
