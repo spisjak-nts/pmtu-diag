@@ -68,23 +68,48 @@ except ImportError:
         "  generic       : pip install scapy --break-system-packages"
     )
 
-if os.geteuid() != 0:
-    # Not running as root. Re-exec the script through sudo so the user is
+def have_cap_net_raw():
+    """Return whether this Linux process has effective CAP_NET_RAW."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        with open("/proc/self/status", encoding="ascii") as status:
+            for line in status:
+                if line.startswith("CapEff:"):
+                    effective = int(line.split()[1], 16)
+                    return bool(effective & (1 << 13))  # CAP_NET_RAW
+    except Exception:
+        pass
+
+    return False
+
+
+needs_sudo = os.geteuid() != 0
+if sys.platform.startswith("linux"):
+    has_capability = have_cap_net_raw()
+    if os.geteuid() == 0 and not has_capability:
+        die("ERROR: CAP_NET_RAW is not effective, even though this process is root.\n"
+            "  Container runtimes can remove it from root. Ensure NET_RAW is in the\n"
+            "  effective and bounding capability sets; check seccomp, AppArmor or SELinux.")
+    needs_sudo = not has_capability
+
+if needs_sudo:
+    # Without root or CAP_NET_RAW, re-exec through sudo so the user is
     # prompted for their password, then continues as root. We guard against
     # an infinite loop with an env marker in case sudo itself fails to
     # elevate (e.g. user not in sudoers).
     if os.environ.get("PMTU_DIAG_SUDO_REEXEC") == "1":
-        die("ERROR: still not root after sudo — cannot acquire raw sockets.\n"
-            "  Run the script directly as root instead.")
+        die("ERROR: raw-socket access is still unavailable after sudo.\n"
+            "  Sudo did not grant root or CAP_NET_RAW. Check the container or host policy.")
     sudo_path = None
     for p in ("/usr/bin/sudo", "/bin/sudo", "/usr/local/bin/sudo"):
         if os.path.exists(p):
             sudo_path = p
             break
     if sudo_path is None:
-        die("ERROR: root privileges are required (raw sockets) and 'sudo'\n"
+        die("ERROR: raw-socket access requires CAP_NET_RAW (or root), and 'sudo'\n"
             "  was not found. Re-run as root: " + " ".join(sys.argv))
-    sys.stderr.write("Root privileges required — elevating via sudo...\n")
+    sys.stderr.write("CAP_NET_RAW or root privileges required — elevating via sudo...\n")
     env = dict(os.environ, PMTU_DIAG_SUDO_REEXEC="1")
     # Re-exec through sudo. We pass the absolute interpreter path
     # (sys.executable) explicitly, so the same Python (e.g. Homebrew with
@@ -231,7 +256,9 @@ def measure_reply_mtu(target, total_size, iface, timeout, ident, count):
     # trailing fragments carry no ICMP header and would be missed.
     bpf = "src host %s and (ip[6:2] & 0x3fff) != 0" % target
     try:
-        sniffer = AsyncSniffer(filter=bpf, iface=iface, store=True)
+        # Promiscuous capture is unnecessary: only traffic addressed to this
+        # host is relevant. Disabling it avoids requiring CAP_NET_ADMIN.
+        sniffer = AsyncSniffer(filter=bpf, iface=iface, store=True, promisc=False)
         sniffer.start()
         sniffer_ok = True
     except Exception:
